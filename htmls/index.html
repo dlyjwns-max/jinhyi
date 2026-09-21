@@ -1,0 +1,899 @@
+<!DOCTYPE html>
+<html lang="ko" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D 사격 & 궁술 시뮬레이터 (Technical Blueprint & Game)</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        cyber: {
+                            cyan: '#00f3ff',
+                            magenta: '#ff0055',
+                            yellow: '#ffe600',
+                            dark: '#0a0d14',
+                            panel: 'rgba(15, 23, 42, 0.85)'
+                        }
+                    },
+                    fontFamily: {
+                        mono: ['JetBrains Mono', 'Courier New', 'monospace'],
+                        sans: ['Inter', 'sans-serif']
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Three.js (3D Engine) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <!-- Tone.js (Synthesized Audio) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            user-select: none;
+            -webkit-user-select: none;
+            overflow: hidden;
+            background-color: #05070a;
+        }
+
+        #game-canvas {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+            touch-action: none;
+            cursor: crosshair;
+        }
+
+        .crosshair-line {
+            transition: transform 0.05s ease-out, background-color 0.1s ease;
+        }
+
+        @keyframes hitMarkerPulse {
+            0% { transform: translate(-50%, -50%) scale(1.4); opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(0.8); opacity: 0; }
+        }
+        .hit-marker {
+            animation: hitMarkerPulse 0.25s ease-out forwards;
+        }
+
+        @keyframes damageFloat {
+            0% { opacity: 1; transform: translate(-50%, -100%) scale(0.8); }
+            30% { transform: translate(-50%, -180%) scale(1.2); }
+            100% { opacity: 0; transform: translate(-50%, -250%) scale(1); }
+        }
+        .damage-pop {
+            position: absolute;
+            animation: damageFloat 0.85s cubic-bezier(0.18, 0.89, 0.32, 1.28) forwards;
+            pointer-events: none;
+            font-weight: 800;
+            text-shadow: 0 0 10px rgba(0,0,0,0.8), 0 0 5px currentColor;
+        }
+
+        .scope-overlay {
+            background: radial-gradient(circle at center, transparent 32%, rgba(0,0,0,0.95) 36%, black 100%);
+            pointer-events: none;
+        }
+
+        .glass-panel {
+            background: rgba(10, 15, 26, 0.8);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
+        }
+
+        @keyframes slowMoPulse {
+            0%, 100% { box-shadow: inset 0 0 50px rgba(0, 243, 255, 0.3); }
+            50% { box-shadow: inset 0 0 100px rgba(0, 243, 255, 0.6); }
+        }
+        .slow-mo-active {
+            animation: slowMoPulse 1.5s infinite ease-in-out;
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.6);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #00f3ff;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body class="text-slate-100 select-none">
+
+    <!-- 3D WebGL Canvas -->
+    <canvas id="game-canvas"></canvas>
+
+    <div id="scope-overlay" class="scope-overlay fixed inset-0 z-10 hidden flex items-center justify-center pointer-events-none">
+        <div class="w-full h-[1px] bg-red-500/60 absolute"></div>
+        <div class="h-full w-[1px] bg-red-500/60 absolute"></div>
+        <div class="border border-red-500/40 rounded-full w-48 h-48 absolute"></div>
+        <div class="border border-red-500/20 rounded-full w-96 h-96 absolute"></div>
+        <div class="text-xs font-mono text-red-400 absolute top-1/2 left-1/2 ml-4 -mt-6">SNIPER_OPTICS 8X</div>
+        <div class="text-xs font-mono text-red-400 absolute top-1/2 left-1/2 ml-4 mt-2">RANGE: <span id="scope-range">--</span>m</div>
+    </div>
+
+    <div id="ui-layer" class="fixed inset-0 z-20 pointer-events-none flex flex-col justify-between p-3 md:p-6">
+        
+        <!-- TOP BAR -->
+        <div class="flex flex-wrap items-center justify-between gap-3">
+            
+            <!-- Title Header -->
+            <div class="glass-panel px-4 py-2 rounded-xl flex items-center gap-3 pointer-events-auto">
+                <div class="w-9 h-9 rounded-lg bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-cyan-400 shadow-lg shadow-cyan-500/20">
+                    <i class="fa-solid fa-crosshairs text-lg"></i>
+                </div>
+                <div>
+                    <h1 class="text-xs sm:text-sm font-bold tracking-wider text-white uppercase flex items-center gap-2">
+                        APEX 3D SIMULATOR
+                        <span class="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/20 border border-cyan-400/30 text-cyan-300 font-mono">v2.5</span>
+                    </h1>
+                    <p class="text-[11px] text-cyan-400 font-mono font-semibold" id="current-weapon-label">MODERN ASSAULT RIFLE</p>
+                </div>
+            </div>
+
+            <!-- Stats Bar -->
+            <div class="glass-panel px-4 py-2 rounded-xl flex items-center gap-4 sm:gap-6 font-mono text-xs pointer-events-auto">
+                <div>
+                    <div class="text-slate-400 text-[9px] uppercase">SCORE</div>
+                    <div class="text-base sm:text-lg font-bold text-cyan-400" id="hud-score">0000</div>
+                </div>
+                <div class="h-6 w-[1px] bg-slate-700/60"></div>
+                <div>
+                    <div class="text-slate-400 text-[9px] uppercase">ACCURACY</div>
+                    <div class="text-base sm:text-lg font-bold text-emerald-400" id="hud-accuracy">100%</div>
+                </div>
+                <div class="h-6 w-[1px] bg-slate-700/60"></div>
+                <div>
+                    <div class="text-slate-400 text-[9px] uppercase">HEADSHOTS</div>
+                    <div class="text-base sm:text-lg font-bold text-amber-400" id="hud-headshots">0</div>
+                </div>
+                <div class="h-6 w-[1px] bg-slate-700/60"></div>
+                <div>
+                    <div class="text-slate-400 text-[9px] uppercase">COMBO</div>
+                    <div class="text-base sm:text-lg font-bold text-pink-500" id="hud-combo">x0</div>
+                </div>
+            </div>
+
+            <!-- Header Action Controls -->
+            <div class="flex items-center gap-2 pointer-events-auto">
+                <button id="btn-blueprint" class="px-3 py-2 rounded-xl glass-panel hover:bg-cyan-500/20 hover:border-cyan-400/50 text-cyan-300 transition text-xs font-semibold flex items-center gap-2">
+                    <i class="fa-solid fa-code"></i>
+                    <span class="hidden sm:inline">기술 명세서</span>
+                </button>
+                <button id="btn-reset-targets" class="px-3 py-2 rounded-xl glass-panel hover:bg-slate-700/50 text-slate-300 transition text-xs font-semibold flex items-center gap-2">
+                    <i class="fa-solid fa-rotate-left"></i>
+                    <span class="hidden sm:inline">리셋</span>
+                </button>
+                <button id="btn-toggle-sound" class="w-9 h-9 rounded-xl glass-panel hover:bg-slate-700/50 text-slate-300 transition flex items-center justify-center">
+                    <i class="fa-solid fa-volume-high" id="sound-icon"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- TARGET TYPES LEGEND BAR -->
+        <div class="glass-panel px-3 py-1.5 rounded-xl self-center pointer-events-auto flex items-center gap-3 text-[10px] font-mono text-slate-300 overflow-x-auto max-w-full">
+            <span class="text-cyan-400 font-bold"><i class="fa-solid fa-bullseye"></i> 표적 유형:</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-cyan-400"></span> 표준 링</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-red-500"></span> 전술 실루엣</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-purple-400"></span> 비행 드론</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-amber-500"></span> 중장갑 (300HP)</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-yellow-300"></span> 황금 스피드</span>
+            <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-emerald-400"></span> 팝업 스위블</span>
+        </div>
+
+        <!-- CENTER AIM CROSSHAIR -->
+        <div id="crosshair-container" class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
+            <div class="w-2 h-2 bg-cyan-400 rounded-full shadow-[0_0_10px_#00f3ff] absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"></div>
+            <div id="ch-top" class="crosshair-line absolute w-[2px] h-3 bg-cyan-400/80 -top-4 left-1/2 -translate-x-1/2 rounded-full"></div>
+            <div id="ch-bottom" class="crosshair-line absolute w-[2px] h-3 bg-cyan-400/80 top-1 left-1/2 -translate-x-1/2 rounded-full"></div>
+            <div id="ch-left" class="crosshair-line absolute h-[2px] w-3 bg-cyan-400/80 -left-4 top-1/2 -translate-y-1/2 rounded-full"></div>
+            <div id="ch-right" class="crosshair-line absolute h-[2px] w-3 bg-cyan-400/80 left-1 top-1/2 -translate-y-1/2 rounded-full"></div>
+            <div id="hit-marker-box" class="relative w-8 h-8 -translate-x-1/2 -translate-y-1/2 left-1/2 top-1/2"></div>
+        </div>
+
+        <!-- Damage Text Overlay Container -->
+        <div id="damage-container" class="fixed inset-0 pointer-events-none z-30"></div>
+
+        <!-- CONTROL INSTRUCTION PROMPT BANNER -->
+        <div class="self-center bg-slate-900/90 border border-cyan-500/30 px-4 py-1.5 rounded-full text-[11px] font-mono text-cyan-300 flex items-center gap-3 animate-pulse pointer-events-auto">
+            <span class="flex items-center gap-1"><i class="fa-solid fa-computer-mouse"></i> 드래그 / WASD / 방향키 : 조준</span>
+            <span class="text-slate-600">|</span>
+            <span class="flex items-center gap-1"><i class="fa-solid fa-hand-pointer"></i> 클릭 / 터치 : 발사</span>
+            <span class="text-slate-600">|</span>
+            <span class="flex items-center gap-1"><i class="fa-solid fa-arrows-to-eye"></i> 우클릭 : 저격 스코프</span>
+        </div>
+
+        <!-- BOTTOM HUD & WEAPON SELECTION -->
+        <div class="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+            
+            <!-- Wind & Environment Indicator -->
+            <div class="glass-panel p-2.5 rounded-xl font-mono text-xs flex items-center justify-around md:justify-start gap-4 pointer-events-auto">
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-wind text-cyan-400"></i>
+                    <div>
+                        <div class="text-[9px] text-slate-400">WIND</div>
+                        <div class="font-bold text-slate-200 text-xs" id="wind-reading">1.2 m/s EAST</div>
+                    </div>
+                </div>
+                <div class="h-6 w-[1px] bg-slate-700/60"></div>
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-earth-americas text-emerald-400"></i>
+                    <div>
+                        <div class="text-[9px] text-slate-400">GRAVITY</div>
+                        <div class="font-bold text-slate-200 text-xs">9.81 m/s²</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Weapon Deck -->
+            <div class="glass-panel p-1.5 rounded-2xl flex items-center justify-center gap-1 sm:gap-2 pointer-events-auto shadow-2xl border-cyan-500/20">
+                <button data-weapon="rifle" class="weapon-btn active-weapon px-3 py-2 rounded-xl text-xs font-semibold transition-all duration-200 bg-cyan-500/20 text-cyan-300 border border-cyan-400/40 shadow-lg flex items-center gap-2">
+                    <i class="fa-solid fa-gun"></i>
+                    <span class="hidden sm:inline">돌격소총</span>
+                </button>
+                <button data-weapon="sniper" class="weapon-btn px-3 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 transition-all duration-200 border border-transparent flex items-center gap-2">
+                    <i class="fa-solid fa-crosshairs"></i>
+                    <span class="hidden sm:inline">저격소총</span>
+                </button>
+                <button data-weapon="bow" class="weapon-btn px-3 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 transition-all duration-200 border border-transparent flex items-center gap-2">
+                    <i class="fa-solid fa-bow-arrow"></i>
+                    <span class="hidden sm:inline">컴파운드 활</span>
+                </button>
+                <button data-weapon="plasma" class="weapon-btn px-3 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 transition-all duration-200 border border-transparent flex items-center gap-2">
+                    <i class="fa-solid fa-bolt"></i>
+                    <span class="hidden sm:inline">플라즈마</span>
+                </button>
+            </div>
+
+            <!-- Mobile Specific Action Buttons -->
+            <div class="flex items-center gap-2 pointer-events-auto md:hidden justify-center">
+                <button id="btn-mobile-scope" class="flex-1 py-2.5 rounded-xl glass-panel text-cyan-400 font-bold text-xs flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-eye"></i> ADS 스코프
+                </button>
+                <button id="btn-mobile-fire" class="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-pink-600 text-white font-bold text-xs shadow-lg flex items-center justify-center gap-2 active:scale-95">
+                    <i class="fa-solid fa-bullseye"></i> 격발 (FIRE)
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- TECHNICAL SPECIFICATION BLUEPRINT MODAL -->
+    <div id="blueprint-modal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-md hidden flex items-center justify-center p-4 md:p-8">
+        <div class="glass-panel w-full max-w-5xl max-h-[90vh] rounded-2xl border border-cyan-500/30 flex flex-col overflow-hidden shadow-2xl">
+            
+            <div class="p-4 md:p-6 border-b border-slate-800 flex items-center justify-between bg-slate-900/80">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-cyan-400">
+                        <i class="fa-solid fa-cubes-stacked text-xl"></i>
+                    </div>
+                    <div>
+                        <h2 class="text-lg font-bold text-white flex items-center gap-2">
+                            3D 사격 메카닉 개발 설계서
+                            <span class="text-xs font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">v2.5 ARCHITECTURE</span>
+                        </h2>
+                        <p class="text-xs text-slate-400 font-mono">Unity C# & Unreal Engine C++ 하이퀄리티 사격 시스템 스펙</p>
+                    </div>
+                </div>
+                <button id="btn-close-blueprint" class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <div class="p-6 overflow-y-auto space-y-6 font-sans text-sm text-slate-300">
+                <section>
+                    <h3 class="text-base font-bold text-cyan-400 mb-2">1. 시각/청각적 사격 제어 및 카메라 회전 아키텍처</h3>
+                    <p class="text-xs text-slate-400 leading-relaxed">
+                        카메라 조준 회전각(Yaw/Pitch)을 반동 오프셋(Recoil Offset)과 독립 분리하여 마우스 및 터치 드래그 조준 시 화면 위치가 고정되거나 리셋되지 않는 절차적 조준 제어를 구현했습니다.
+                    </p>
+                </section>
+
+                <section>
+                    <h3 class="text-base font-bold text-cyan-400 mb-2">2. Unity C# 핵심 사격 스크립트</h3>
+                    <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 font-mono text-xs text-cyan-200 overflow-x-auto">
+<pre><code>using UnityEngine;
+
+public class AimAndShootingController : MonoBehaviour
+{
+    [Header("Aiming Angles")]
+    public float yaw = 0f;
+    public float pitch = 0f;
+    public float sensitivity = 0.15f;
+
+    [Header("Recoil Recovery")]
+    public Vector2 recoilOffset = Vector2.zero;
+
+    void Update()
+    {
+        // Smooth camera rotation combining player aim and recoil impulse
+        pitch = Mathf.Clamp(pitch, -80f, 80f);
+        recoilOffset = Vector2.Lerp(recoilOffset, Vector2.zero, Time.deltaTime * 10f);
+
+        transform.localRotation = Quaternion.Euler(pitch + recoilOffset.y, yaw + recoilOffset.x, 0f);
+    }
+}</code></pre>
+                    </div>
+                </section>
+            </div>
+
+            <div class="p-4 border-t border-slate-800 bg-slate-900/80 flex justify-end">
+                <button id="btn-close-blueprint-bottom" class="px-5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition">
+                    닫기 및 게임 복귀
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        // Game State Variables
+        const gameState = {
+        // Target Types Configuration
+        const TARGET_TYPES = {
+            STANDARD: { name: 'STANDARD_RING', hp: 100, scoreMult: 1.0, color: 0x00f3ff },
+            SILHOUETTE: { name: 'TACTICAL_SILHOUETTE', hp: 120, scoreMult: 1.2, color: 0xff0055 },
+            DRONE: { name: 'FLYING_DRONE', hp: 80, scoreMult: 2.0, color: 0xa855f7 },
+            ARMORED: { name: 'HEAVY_ARMORED', hp: 300, scoreMult: 2.5, color: 0xf59e0b },
+            GOLDEN: { name: 'GOLDEN_SWIFT', hp: 50, scoreMult: 4.0, color: 0xfacc15 },
+            POPUP: { name: 'POPUP_SWIVEL', hp: 90, scoreMult: 1.5, color: 0x10b981 }
+        };
+
+        // Three.js Core Variables
+        let scene, camera, renderer;
+        let targets = [];
+        let projectiles = [];
+        let particleSparks = [];
+        let debrisList = [];
+        let weaponModel;
+        let lastShotTime = 0;
+
+        // FIXED CAMERA ROTATION STATE (Prevents aim lock bug)
+        function createTargetMesh(typeKey, x, y, z, options = {}) {
+            const type = TARGET_TYPES[typeKey] || TARGET_TYPES.STANDARD;
+            const targetGroup = new THREE.Group();
+            targetGroup.position.set(x, y, z);
+
+            let bodyMesh, headMesh, coreMesh;
+
+            // Stand Post
+            const postGeo = new THREE.CylinderGeometry(0.06, 0.08, y > 0 ? y : 1.5, 12);
+            const postMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.6 });
+            const post = new THREE.Mesh(postGeo, postMat);
+            post.position.y = y > 0 ? -y / 2 : -0.75;
+            targetGroup.add(post);
+
+            if (typeKey === 'STANDARD') {
+                // Multi-ring concentric target
+                const outerGeo = new THREE.CylinderGeometry(0.9, 0.9, 0.08, 32);
+                outerGeo.rotateX(Math.PI / 2);
+                bodyMesh = new THREE.Mesh(outerGeo, new THREE.MeshStandardMaterial({ color: 0x0f172a }));
+                bodyMesh.name = "body";
+                targetGroup.add(bodyMesh);
+
+                const ringGeo = new THREE.CylinderGeometry(0.6, 0.6, 0.09, 32);
+                ringGeo.rotateX(Math.PI / 2);
+                const ring = new THREE.Mesh(ringGeo, new THREE.MeshStandardMaterial({ color: 0x00f3ff }));
+                targetGroup.add(ring);
+
+                const centerGeo = new THREE.CylinderGeometry(0.25, 0.25, 0.1, 32);
+                centerGeo.rotateX(Math.PI / 2);
+                headMesh = new THREE.Mesh(centerGeo, new THREE.MeshStandardMaterial({ color: 0xff0055, emissive: 0x440011 }));
+                headMesh.name = "head";
+                targetGroup.add(headMesh);
+
+            } else if (typeKey === 'SILHOUETTE') {
+                // Tactical Humanoid Silhouette
+                const bodyGeo = new THREE.BoxGeometry(0.8, 1.2, 0.1);
+                bodyMesh = new THREE.Mesh(bodyGeo, new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.5 }));
+                bodyMesh.name = "body";
+                targetGroup.add(bodyMesh);
+
+                const chestGeo = new THREE.BoxGeometry(0.4, 0.4, 0.12);
+                const chestMesh = new THREE.Mesh(chestGeo, new THREE.MeshStandardMaterial({ color: 0xd97706 }));
+                chestMesh.position.set(0, 0.2, 0.01);
+                chestMesh.name = "chest";
+                targetGroup.add(chestMesh);
+
+                const headGeo = new THREE.SphereGeometry(0.22, 16, 16);
+                headMesh = new THREE.Mesh(headGeo, new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0x660000 }));
+                headMesh.position.set(0, 0.8, 0);
+                headMesh.name = "head";
+                targetGroup.add(headMesh);
+
+            } else if (typeKey === 'DRONE') {
+                // Sci-Fi Flying Drone Target
+                post.visible = false; // Drones float
+
+                const bodyGeo = new THREE.OctahedronGeometry(0.5, 2);
+                bodyMesh = new THREE.Mesh(bodyGeo, new THREE.MeshStandardMaterial({ color: 0x581c87, metalness: 0.8, roughness: 0.2 }));
+                bodyMesh.name = "body";
+                targetGroup.add(bodyMesh);
+
+                const ringGeo = new THREE.TorusGeometry(0.7, 0.04, 12, 32);
+                const ringMesh = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0xa855f7 }));
+                targetGroup.add(ringMesh);
+
+                const coreGeo = new THREE.SphereGeometry(0.2, 16, 16);
+                headMesh = new THREE.Mesh(coreGeo, new THREE.MeshBasicMaterial({ color: 0x00f3ff }));
+                headMesh.name = "head";
+                targetGroup.add(headMesh);
+
+                targetGroup.userData.rotorRing = ringMesh;
+
+            } else if (typeKey === 'ARMORED') {
+                // Heavy Armored Shield Target
+                const shieldGeo = new THREE.BoxGeometry(1.4, 1.8, 0.2);
+                bodyMesh = new THREE.Mesh(shieldGeo, new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.9, roughness: 0.3 }));
+                bodyMesh.name = "body";
+                targetGroup.add(bodyMesh);
+
+                const plateGeo = new THREE.BoxGeometry(0.9, 0.9, 0.22);
+                const plateMesh = new THREE.Mesh(plateGeo, new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: 0.7 }));
+                plateMesh.position.set(0, 0.1, 0.02);
+                targetGroup.add(plateMesh);
+
+                const eyeGeo = new THREE.CylinderGeometry(0.18, 0.18, 0.25, 16);
+                eyeGeo.rotateX(Math.PI / 2);
+                headMesh = new THREE.Mesh(eyeGeo, new THREE.MeshBasicMaterial({ color: 0xff0055 }));
+                headMesh.position.set(0, 0.5, 0.03);
+                headMesh.name = "head";
+                targetGroup.add(headMesh);
+
+                targetGroup.userData.plateMesh = plateMesh;
+
+            } else if (typeKey === 'GOLDEN') {
+                // Speedy Golden Target
+                const orbGeo = new THREE.IcosahedronGeometry(0.4, 3);
+                bodyMesh = new THREE.Mesh(orbGeo, new THREE.MeshStandardMaterial({ color: 0xfacc15, metalness: 0.9, roughness: 0.1, emissive: 0x443300 }));
+                bodyMesh.name = "body";
+                targetGroup.add(bodyMesh);
+
+                const glowGeo = new THREE.SphereGeometry(0.5, 16, 16);
+                const glowMesh = new THREE.Mesh(glowGeo, new THREE.MeshBasicMaterial({ color: 0xffea00, transparent: true, opacity: 0.3 }));
+                targetGroup.add(glowMesh);
+
+                headMesh = bodyMesh; // Entire orb acts as headshot multiplier
+
+            } else if (typeKey === 'POPUP') {
+                // Pop-up Swivel Target
+                const plateGeo = new THREE.CylinderGeometry(0.65, 0.65, 0.08, 32);
+                plateGeo.rotateX(Math.PI / 2);
+                bodyMesh = new THREE.Mesh(plateGeo, new THREE.MeshStandardMaterial({ color: 0x065f46 }));
+                bodyMesh.name = "body";
+                targetGroup.add(bodyMesh);
+
+                const centerGeo = new THREE.CylinderGeometry(0.25, 0.25, 0.1, 32);
+                centerGeo.rotateX(Math.PI / 2);
+                headMesh = new THREE.Mesh(centerGeo, new THREE.MeshStandardMaterial({ color: 0x34d399, emissive: 0x054422 }));
+                headMesh.name = "head";
+                targetGroup.add(headMesh);
+            }
+
+            targetGroup.userData = {
+                typeKey: typeKey,
+                maxHp: type.hp,
+                hp: type.hp,
+                scoreMult: type.scoreMult,
+                isMoving: options.isMoving || false,
+                moveSpeed: options.moveSpeed || (1.2 + Math.random() * 2),
+                moveRange: options.moveRange || 4,
+                initialX: x,
+                initialY: y,
+                initialZ: z,
+                bodyMesh: bodyMesh,
+                headMesh: headMesh || bodyMesh,
+                chestMesh: targetGroup.getObjectByName("chest"),
+                popupTimer: Math.random() * 5,
+                isPoppedUp: true
+            };
+
+            scene.add(targetGroup);
+            targets.push(targetGroup);
+        }
+
+        function spawnTargets() {
+            targets.forEach(t => scene.remove(t));
+            targets = [];
+
+            // Standard Ring Targets
+            createTargetMesh('STANDARD', -5, 1.8, -18, { isMoving: false });
+            createTargetMesh('STANDARD', 5, 1.8, -18, { isMoving: false });
+
+            // Tactical Silhouettes
+            createTargetMesh('SILHOUETTE', -2.5, 1.8, -28, { isMoving: true, moveSpeed: 1.5, moveRange: 3 });
+            createTargetMesh('SILHOUETTE', 2.5, 1.8, -28, { isMoving: true, moveSpeed: 1.8, moveRange: 3.5 });
+
+            // Sci-Fi Flying Drones (High Altitude)
+            createTargetMesh('DRONE', -7, 4.5, -22, { isMoving: true, moveSpeed: 2.2, moveRange: 6 });
+            createTargetMesh('DRONE', 6, 5.2, -35, { isMoving: true, moveSpeed: 2.8, moveRange: 8 });
+
+            // Heavy Armored Boss Target
+            createTargetMesh('ARMORED', 0, 2.2, -45, { isMoving: true, moveSpeed: 1.0, moveRange: 4 });
+
+            // Speedy Golden Bonus Targets
+            createTargetMesh('GOLDEN', -8, 3.0, -40, { isMoving: true, moveSpeed: 4.5, moveRange: 9 });
+
+            // Pop-up Swivel Targets
+            createTargetMesh('POPUP', -4, 1.6, -12, { isMoving: false });
+            createTargetMesh('POPUP', 4, 1.6, -12, { isMoving: false });
+            createTargetMesh('POPUP', 0, 1.6, -60, { isMoving: false });
+        }
+
+        function playSound(type) {
+        function processImpact(targetGroup, isHeadshot, impactPoint, baseDamage) {
+            gameState.hits++;
+            gameState.combo++;
+
+            const ud = targetGroup.userData;
+            let zoneMultiplier = 1.0;
+
+            if (isHeadshot) {
+                zoneMultiplier = 3.5;
+            } else if (targetGroup.getObjectByName("chest") && impactPoint.distanceTo(targetGroup.getObjectByName("chest").getWorldPosition(new THREE.Vector3())) < 0.3) {
+                zoneMultiplier = 2.0;
+            }
+
+            const finalDamage = Math.round(baseDamage * zoneMultiplier * (ud.typeKey === 'GOLDEN' ? 1.5 : 1.0));
+            ud.hp -= finalDamage;
+
+            // Visual Damage Feedbacks for Armored Target
+            if (ud.typeKey === 'ARMORED' && ud.plateMesh) {
+                const ratio = Math.max(0, ud.hp / ud.maxHp);
+                ud.plateMesh.material.color.setHSL(0.1 * ratio, 0.9, 0.5); // Color shifts from Gold to Red
+            }
+
+            const dist = Math.round(camera.position.distanceTo(targetGroup.position));
+            const scoreEarned = Math.round(((finalDamage * 10) + (dist * 6)) * ud.scoreMult * (1 + gameState.combo * 0.1));
+            gameState.score += scoreEarned;
+
+            if (isHeadshot) {
+                gameState.headshots++;
+                playSound('headshot');
+                showHitMarker(true);
+                showDamagePop(impactPoint, `CRITICAL! -${finalDamage}`, '#ff0055');
+            } else {
+                playSound('hit');
+                showHitMarker(false);
+                showDamagePop(impactPoint, `-${finalDamage}`, ud.typeKey === 'GOLDEN' ? '#facc15' : '#00f3ff');
+            }
+
+            // Target Destruction & Respawn
+            if (ud.hp <= 0) {
+                scene.remove(targetGroup);
+                targets = targets.filter(t => t !== targetGroup);
+
+                if (ud.typeKey === 'GOLDEN') {
+                    gameState.score += 500;
+                    gameState.combo += 2;
+                }
+
+                setTimeout(() => {
+                    createTargetMesh(ud.typeKey, ud.initialX, ud.initialY, ud.initialZ, {
+                        isMoving: ud.isMoving,
+                        moveSpeed: ud.moveSpeed,
+                        moveRange: ud.moveRange
+                    });
+                }, 2200);
+            }
+        }
+
+        function spawnProjectile(wp) {
+            const projGeo = (wp.type === 'bow') ? new THREE.CylinderGeometry(0.015, 0.015, 0.8) : new THREE.SphereGeometry(0.15, 16, 16);
+            projGeo.rotateX(Math.PI / 2);
+            
+            const projMat = new THREE.MeshBasicMaterial({ color: wp.color });
+            const mesh = new THREE.Mesh(projGeo, projMat);
+
+            const spawnPos = camera.position.clone().add(new THREE.Vector3(0.1, -0.1, -0.5).applyQuaternion(camera.quaternion));
+            mesh.position.copy(spawnPos);
+
+            const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
+            const velocity = dir.multiplyScalar(wp.velocity);
+
+            projectiles.push({
+                mesh: mesh,
+                velocity: velocity,
+                gravity: (wp.type === 'bow') ? wp.gravity : 0,
+                damage: wp.damage
+        function processImpact(targetGroup, hitSpotName, impactPoint, baseDamage) {
+            gameState.hits++;
+            gameState.combo++;
+
+            const data = targetGroup.userData;
+            let spotMultiplier = 1.0;
+            let isCritical = false;
+
+            if (hitSpotName === "head") {
+                spotMultiplier = 3.0;
+                isCritical = true;
+            } else if (hitSpotName === "chest") {
+                spotMultiplier = 1.6;
+            }
+
+            const finalDamage = Math.round(baseDamage * spotMultiplier * data.scoreMult);
+            data.hp -= finalDamage;
+
+            const dist = Math.round(camera.position.distanceTo(targetGroup.position));
+            gameState.score += (finalDamage * 10) + (dist * 4) + (gameState.combo * 15);
+
+            if (isCritical) {
+                gameState.headshots++;
+                playSound('headshot');
+                showHitMarker(true);
+                showDamagePop(impactPoint, `CRITICAL! -${finalDamage}`, '#ff0055');
+            } else {
+                playSound('hit');
+                showHitMarker(false);
+                showDamagePop(impactPoint, `-${finalDamage}`, '#00f3ff');
+            }
+
+            // Damage Visual Color Shift for Armored/Heavy Targets
+            if (data.typeKey === 'ARMORED' && data.bodyMesh) {
+                const healthRatio = Math.max(0, data.hp / data.maxHp);
+                data.bodyMesh.material.color.setHSL(0.08 * healthRatio, 0.9, 0.5);
+            }
+
+            if (data.hp <= 0) {
+                scene.remove(targetGroup);
+                targets = targets.filter(t => t !== targetGroup);
+                
+                // Respawn target after delay
+                setTimeout(() => {
+                    createTargetMesh(
+                        data.initialPos.x, 
+                        data.initialPos.y, 
+                        data.initialPos.z, 
+                        data.typeKey, 
+                        { isMoving: data.isMoving, moveRange: data.moveRange, flyPattern: data.flyPattern, moveSpeed: data.moveSpeed }
+                    );
+                }, 2000);
+            }
+        }
+
+        function showHitMarker(isHeadshot) {
+            const box = document.getElementById('hit-marker-box');
+            box.innerHTML = `<div class="hit-marker absolute inset-0 border-2 ${isHeadshot ? 'border-pink-500 scale-125' : 'border-cyan-400'} rotate-45"></div>`;
+            setTimeout(() => { box.innerHTML = ''; }, 250);
+        }
+
+        function showDamagePop(worldPos, text, color) {
+            const screenPos = worldPos.clone().project(camera);
+            const x = (screenPos.x * .5 + .5) * window.innerWidth;
+            const y = (-(screenPos.y * .5) + .5) * window.innerHeight;
+
+            const el = document.createElement('div');
+            el.className = 'damage-pop text-xs sm:text-sm font-mono';
+            el.style.left = `${x}px`;
+            el.style.top = `${y}px`;
+            el.style.color = color;
+            el.innerText = text;
+
+            document.getElementById('damage-container').appendChild(el);
+            setTimeout(() => el.remove(), 850);
+        }
+
+        function updateHUD() {
+            document.getElementById('hud-score').innerText = String(gameState.score).padStart(4, '0');
+            const acc = gameState.shotsFired > 0 ? Math.round((gameState.hits / gameState.shotsFired) * 100) : 100;
+            document.getElementById('hud-accuracy').innerText = `${acc}%`;
+            document.getElementById('hud-headshots').innerText = gameState.headshots;
+            document.getElementById('hud-combo').innerText = `x${gameState.combo}`;
+        }
+
+        function initControls() {
+            let isDragging = false;
+            let previousPos = { x: 0, y: 0 };
+
+            // Mouse Drag Aiming
+            window.addEventListener('mousedown', (e) => {
+                if (e.target.closest('#ui-layer') || e.target.closest('#blueprint-modal')) return;
+                isDragging = true;
+                previousPos = { x: e.clientX, y: e.clientY };
+                fireWeapon();
+            });
+
+            window.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+
+                const deltaX = e.clientX - previousPos.x;
+                const deltaY = e.clientY - previousPos.y;
+
+                const sens = gameState.isScoped ? 0.001 : 0.003;
+                cameraYaw -= deltaX * sens;
+                cameraPitch -= deltaY * sens;
+
+                // Clamp vertical look angle
+                cameraPitch = Math.max(-Math.PI / 2.3, Math.min(Math.PI / 2.3, cameraPitch));
+
+                previousPos = { x: e.clientX, y: e.clientY };
+            });
+
+            window.addEventListener('mouseup', () => { isDragging = false; });
+
+            // Touch Drag Aiming for Mobile
+            window.addEventListener('touchstart', (e) => {
+                if (e.target.closest('#ui-layer') || e.target.closest('#blueprint-modal')) return;
+                if (e.touches.length > 0) {
+                    isDragging = true;
+                    previousPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+                    fireWeapon();
+                }
+            }, { passive: true });
+
+            window.addEventListener('touchmove', (e) => {
+                if (!isDragging || e.touches.length === 0) return;
+                const touch = e.touches[0];
+                const deltaX = touch.clientX - previousPos.x;
+                const deltaY = touch.clientY - previousPos.y;
+
+                const sens = gameState.isScoped ? 0.0015 : 0.004;
+                cameraYaw -= deltaX * sens;
+                cameraPitch -= deltaY * sens;
+                cameraPitch = Math.max(-Math.PI / 2.3, Math.min(Math.PI / 2.3, cameraPitch));
+
+                previousPos = { x: touch.clientX, y: touch.clientY };
+            }, { passive: true });
+
+            window.addEventListener('touchend', () => { isDragging = false; });
+
+            // Keyboard Fine Aiming (WASD & Arrow Keys)
+            window.addEventListener('keydown', (e) => {
+                if (e.target.tagName === 'INPUT') return;
+                const step = gameState.isScoped ? 0.01 : 0.03;
+
+                if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') cameraYaw += step;
+                if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') cameraYaw -= step;
+                if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') cameraPitch += step;
+                if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') cameraPitch -= step;
+
+                cameraPitch = Math.max(-Math.PI / 2.3, Math.min(Math.PI / 2.3, cameraPitch));
+            });
+
+            // Right Click Scope
+            window.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                toggleScope();
+            });
+
+            // Weapon Selector
+            document.querySelectorAll('.weapon-btn').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    document.querySelectorAll('.weapon-btn').forEach(b => {
+                        b.classList.remove('bg-cyan-500/20', 'text-cyan-300', 'border-cyan-400/40', 'shadow-lg');
+                        b.classList.add('text-slate-400', 'border-transparent');
+                    });
+
+                    const targetBtn = e.currentTarget;
+                    targetBtn.classList.add('bg-cyan-500/20', 'text-cyan-300', 'border-cyan-400/40', 'shadow-lg');
+
+                    const wpKey = targetBtn.getAttribute('data-weapon');
+                    gameState.currentWeapon = wpKey;
+                    document.getElementById('current-weapon-label').innerText = WEAPONS[wpKey].name;
+                });
+            });
+
+            // Modals & Sound
+            const modal = document.getElementById('blueprint-modal');
+            document.getElementById('btn-blueprint').addEventListener('click', () => modal.classList.remove('hidden'));
+            document.getElementById('btn-close-blueprint').addEventListener('click', () => modal.classList.add('hidden'));
+            document.getElementById('btn-close-blueprint-bottom').addEventListener('click', () => modal.classList.add('hidden'));
+
+            document.getElementById('btn-reset-targets').addEventListener('click', () => spawnTargets());
+
+            document.getElementById('btn-toggle-sound').addEventListener('click', () => {
+                gameState.soundEnabled = !gameState.soundEnabled;
+                document.getElementById('sound-icon').className = gameState.soundEnabled ? "fa-solid fa-volume-high" : "fa-solid fa-volume-xmark text-red-400";
+            });
+
+            document.getElementById('btn-mobile-fire')?.addEventListener('click', () => fireWeapon());
+            document.getElementById('btn-mobile-scope')?.addEventListener('click', () => toggleScope());
+        }
+
+        function toggleScope() {
+            gameState.isScoped = !gameState.isScoped;
+            const overlay = document.getElementById('scope-overlay');
+            if (gameState.isScoped) {
+                camera.fov = 20;
+                overlay.classList.remove('hidden');
+                document.getElementById('scope-range').innerText = Math.round(camera.position.z * -1);
+            } else {
+                camera.fov = 60;
+                overlay.classList.add('hidden');
+            }
+            camera.updateProjectionMatrix();
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        let clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            let delta = clock.getDelta();
+
+            // FIXED CAMERA ANGLE UPDATE (Apply Yaw & Pitch + Recoil)
+            recoilOffset.x *= 0.85;
+            recoilOffset.y *= 0.85;
+            camera.rotation.y = cameraYaw + recoilOffset.x;
+            camera.rotation.x = cameraPitch + recoilOffset.y;
+
+            // Advanced Target Behaviors & Animations
+            const time = clock.getElapsedTime();
+            targets.forEach(t => {
+                const ud = t.userData;
+
+                // Horizontal Movement
+                if (ud.isMoving) {
+                    if (ud.typeKey === 'GOLDEN') {
+                        // Complex sine curve fast flight
+                        t.position.x = ud.initialX + Math.sin(time * ud.moveSpeed) * ud.moveRange;
+                        t.position.y = ud.initialY + Math.cos(time * ud.moveSpeed * 1.5) * 1.2;
+                    } else if (ud.typeKey === 'DRONE') {
+                        // Hovering 3D Wave Pattern
+                        t.position.x = ud.initialX + Math.sin(time * ud.moveSpeed) * ud.moveRange;
+                        t.position.y = ud.initialY + Math.sin(time * 2.0) * 0.8;
+                        if (ud.rotorRing) ud.rotorRing.rotation.z += 0.1;
+                    } else {
+                        t.position.x = ud.initialX + Math.sin(time * ud.moveSpeed) * ud.moveRange;
+                    }
+                }
+
+                // Pop-Up Swivel Flipping Behavior
+                if (ud.typeKey === 'POPUP') {
+                    ud.popupTimer += delta;
+                    if (ud.popupTimer > 4.0) {
+                        ud.isPoppedUp = !ud.isPoppedUp;
+                        ud.popupTimer = 0;
+                    }
+                    t.rotation.x = THREE.MathUtils.lerp(t.rotation.x, ud.isPoppedUp ? 0 : Math.PI / 2.2, delta * 8);
+                }
+            });
+
+            // Projectiles Physics
+            for (let i = projectiles.length - 1; i >= 0; i--) {
+                const p = projectiles[i];
+                p.velocity.y -= p.gravity * delta;
+                p.mesh.position.addScaledVector(p.velocity, delta);
+
+                targets.forEach(t => {
+                    if (p.mesh.position.distanceTo(t.position) < 1.1) {
+                        const isHead = p.mesh.position.distanceTo(t.userData.headMesh.getWorldPosition(new THREE.Vector3())) < 0.4;
+                        processImpact(t, isHead, p.mesh.position, p.damage);
+                        scene.remove(p.mesh);
+                        projectiles.splice(i, 1);
+                    }
+                });
+
+                if (p.mesh.position.z < -120 || p.mesh.position.y < 0) {
+                    scene.remove(p.mesh);
+                    projectiles.splice(i, 1);
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+<!-- ... existing code -->
